@@ -14,6 +14,9 @@ class BraccioActionClient : public rclcpp::Node
 public:
   using BraccioAction = braccio::action::BraccioCMD;
   using GoalHandleBraccio = rclcpp_action::ClientGoalHandle<BraccioAction>;
+  std::vector<float> joints_a = {0, 90, 90, 90, 90, 20};
+  std::vector<float> joints_b = {90, 90, 90, 90, 90, 60};
+  std::vector<float> joints = joints_b;
 
   BraccioActionClient() : Node("braccio_action_client")
   {
@@ -22,15 +25,14 @@ public:
       "braccio_action");
 
     this->timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(2000),
+      std::chrono::milliseconds(5000),
       std::bind(&BraccioActionClient::send_goal, this));
   }
 
   void send_goal()
   {
     using namespace std::placeholders;
-
-    this->timer_->cancel();
+    //this->timer_->cancel();
 
     if (!this->client_ptr_->wait_for_action_server()) {
       RCLCPP_ERROR(this->get_logger(), "Action server not available after waiting");
@@ -38,7 +40,11 @@ public:
     }
 
     auto goal_msg = BraccioAction::Goal();
-    std::vector<float> joints = {90, 90, 90, 90, 90, 20};
+    if (joints == joints_a)
+      joints = joints_b;
+    else
+      joints = joints_a;
+
     goal_msg.goal_joints = joints;
 
     geometry_msgs::msg::Point p;
@@ -97,7 +103,7 @@ private:
     ss << "Result received: ";
     ss << result.result->goal_achieved;
     RCLCPP_INFO(this->get_logger(), ss.str().c_str());
-    rclcpp::shutdown();
+    //rclcpp::shutdown();
   }
 };
 

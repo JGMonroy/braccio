@@ -44,9 +44,14 @@ private:
 
     void execute(const std::shared_ptr<GoalHandleBraccio> goal_handle);
 
+    bool config_serial(std::string portName);
+
     // Internal variables
     geometry_msgs::msg::Point current_position;
     std::vector<float> current_joints;
+    int serial_port;
+
+
     std::string serialPortFilename;
     FILE *serPortFile;
     char front_delimiter_;
