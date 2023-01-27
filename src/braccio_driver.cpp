@@ -4,6 +4,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <cmath>
+#include <math.h>
 
 // Linux headers
 #include <fcntl.h> // Contains file controls like O_RDWR
@@ -16,8 +18,17 @@ using std::placeholders::_1;
 using std::placeholders::_2;
 using std::placeholders::_3;
 
+#define pi 3.14159265
+
 Braccio::Braccio(): Node("Braccio")
 {
+    // Arm Link lengths (m)
+    L1 = 0.076;
+    L2 = 0.124;
+    L3 = 0.124;
+    L4 = 0.060;
+    L5 = 0.130;
+
     // Set srv_server
     srv_server_ = this->create_service<braccio::srv::Status>("Braccio/status", std::bind(&Braccio::process_service_request, this, _1,_2,_3));
 
@@ -243,8 +254,23 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
     }else{
         // Calculate joints for position_goal (MCI)
         RCLCPP_INFO(this->get_logger(), "[Braccio] Goal is Position (%.2f, %.2f, %.2f)", goal->goal_position.x, goal->goal_position.y, goal->goal_position.z);
-        //auto &angles = braccio_mci(goal->goal_position);
-        // Setting joint angles
+
+        auto angles = braccio_mci(goal->goal_position);
+
+        if (angles.size() == 4){
+            // Setting joint angles
+            char writeBuffer[80];
+            sprintf(writeBuffer,"JOINTS %.2f %.2f %.2f %.2f %u %u", angles[0], angles[1], angles[2], angles[3], 0, 0);
+            puts(writeBuffer);
+
+            // write serialPort
+            write(serial_port, writeBuffer, sizeof(writeBuffer));
+        }else{
+            RCLCPP_INFO(this->get_logger(),"[Braccio: MCI] ERROR calculating MCI");
+            result->goal_achieved = false;
+            goal_handle->succeed(result);
+            return;
+        }
     }
 
 
@@ -283,16 +309,7 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
 
 geometry_msgs::msg::Point Braccio::braccio_mcd(std::vector<float> joints)
 {
-    // Kinematic Direct Model of Braccio Arm
-
-    // Arm Link lengths (m)
-    float L1=0.076;
-    float L2=0.124;
-    float L3=0.124;
-    float L4=0.060;
-    float L5=0.130;
-
-    const double pi = std::acos(-1);
+    // Direct Kinematic Model of Braccio Arm
 
     // joints (rad)
     float theta1 = joints[0]*pi/180;
@@ -319,6 +336,141 @@ geometry_msgs::msg::Point Braccio::braccio_mcd(std::vector<float> joints)
 
 std::vector<float> Braccio::braccio_mci(geometry_msgs::msg::Point p)
 {
+    // Inverse Kinematics Model of Braccio Arm (see A.Galeote Geometric Model)
+
+    /* Return the thetas 1 to 4 needed to reach the point xyz. Pitch=theta4 is
+        calculated so Theta 4 is in the range [0,90] (or [90,180] when y<0), and
+        related to the distance from the axis of motor 2 to the point xyz.
+        Theta5 (wrist rotation) and Theta6(gripper) are not calculated
+
+        This implementation works with degrees
+    */
+    std::vector<float> joints;
+
+    // GOAL Point
+    float x = p.x;
+    float y = p.y;
+    float z = -p.z;   // Because this implementation considers Z+ Up, whilethe Kinematic Model Z+ is Down
+
+    // Avoid positions below the robot base.
+    if (z <= 0.0)
+    {
+        RCLCPP_INFO(this->get_logger(), "[Braccio: MCI] Error: Z coordinate must be negative (check MCD)");
+        return joints;
+    }
+
+    // joint limits
+    float q_lim[2] = {0, 180};      //degrees
+    float q2_lim[2] = {15, 165};    //degrees
+
+    // definitions
+    float zd = z - L1;                      //meters
+    float rd = sqrt(pow(x,2) + pow(y,2));   //meters
+    float d = sqrt(pow(rd,2) + pow(zd,2));  //meters
+    float alp = atan2(zd,rd)*180/pi;        // [deg]
+
+    // limit distances (can we reach the goal location?)
+    float d_max = L2+L3+L4+L5;
+    float d_min = sqrt(pow(L3,2) + pow(L4+L5-L2,2));
+
+    // limit angles (top)
+    float betta_p = atan2(L4+L5-L2,L3)*180/pi; // [deg]
+    float betta = 90 - q2_lim[0] - betta_p;
+
+    RCLCPP_INFO(this->get_logger(), "[Braccio MCI] alp=%.4f, q2_lim=[%.4f,%.4f]", alp, q2_lim[0],q2_lim[1]);
+
+    // restrictions: distance
+    if (alp < q2_lim[0])
+    {
+        float B = asin(sin((q2_lim[0]-alp)*pi/180)*L2/(L3+L4+L5))*180/pi;   //deg
+        float C = 180 - B - (q2_lim[0]-alp);                                //deg
+        d_max = L2*sin(C*pi/180)/sin(B*pi/180);                             //meters
+    }
+    else if (alp > betta)
+    {
+        float C = 180 - alp - q2_lim[0];            //degrees
+        float c = sqrt(pow(L3,2)+pow(L4+L5,2));     //meters
+        float A = asin(sin(C*pi/180)*L2/c)*180/pi;  //degrees
+        float B = 180 - A - C;                      //degrees
+        d_min = L2*sin(B*pi/180)/sin(A*pi/180);     //meters
+    }
+
+    // Check if point in reach
+    if (d < d_min)
+    {
+        RCLCPP_INFO(this->get_logger(), "[Braccio MCI] Error: Unreachable point, too near (d < d_min) = (%.2f < %.2f)", d, d_min);
+        return joints;
+    }
+    if (d > d_max)
+    {
+        RCLCPP_INFO(this->get_logger(), "[Braccio MCI] Error: Unreachable point, too far (d > d_max) = (%.2f > %.2f)", d, d_max);
+        return joints;
+    }
+
+
+    //Theta calculation (the good part! XD)
+
+    // THETA 4: Set according to distances
+    // ---------
+    float q4 = 90*(d-d_min)/(d_max-d_min);
+
+    // top triangle
+    float b1 = L3;      //meters
+    float c1 = L4+L5;   //meters
+    float A1 = 90+q4;   //degress
+    float a = sqrt(pow(b1,2) + pow(c1,2) - 2*b1*c1*cos(A1*pi/180));     //meters
+    float B1 = asin(sin(A1*pi/180)*b1/a)*180/pi;  //degrees
+
+    // bottom triangle
+    float b2 = L2;      //meters
+    float c2 = d;       //meters
+    float B2 = acos((pow(a,2)+pow(c2,2)-pow(b2,2))/(2*a*c2))*180/pi;   //degrees
+
+    float gam = alp - B1 - B2;    // pitch in degrees
+
+    float rp = rd - (L5+L4)*cos(gam*pi/180);        //meters
+    float zp = z - (L5+L4)*sin(gam*pi/180) - L1;    //meters
+    float dp = sqrt(pow(rp,2)+pow(zp,2));           //meters
+
+    // THETA 3
+    // -------
+    float q3 = acos((pow(L2,2)+pow(L3,2)-pow(dp,2))/(2*L2*L3))*180/pi - 90;    //degrees
+    float ang1 = atan2(zp,rp)*180/pi;                                          //degrees
+    float ang2 = acos((pow(L2,2)+pow(dp,2)-pow(L3,2))/(2*L2*dp))*180/pi;       //degrees
+
+    // THETA 2
+    // -------
+    float q2 = ang1 + ang2;     //degrees
+
+    // THETA 1
+    // -------
+    float q1;
+    if ( abs(y)<0.001 && abs(x)<0.001 )
+    {
+        // special case, goal in the vertical.
+        q1 = 90;
+    }else{
+        q1 = atan2(y,x)*180/pi;     //degrees
+    }
+
+    // MCI is solved. Yet, fix theta1 joint limit [0, pi]
+    if (q1 < 0)
+    {
+        joints.push_back(180+q1);   //Theta1
+        joints.push_back(180-q2);   //Theta2
+        joints.push_back(180-q3);   //Theta3
+        joints.push_back(180-q4);   //Theta4
+    }
+    else
+    {
+        joints.push_back(q1);   //Theta1
+        joints.push_back(q2);   //Theta2
+        joints.push_back(q3);   //Theta3
+        joints.push_back(q4);   //Theta4
+    }
+
+    // all done!
+    return joints;
 }
 
 int main (int argc, char* argv[]){

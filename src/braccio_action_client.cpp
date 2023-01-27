@@ -16,7 +16,7 @@ public:
   using GoalHandleBraccio = rclcpp_action::ClientGoalHandle<BraccioAction>;
   std::vector<float> joints_a = {0, 90, 90, 90, 90, 20};
   std::vector<float> joints_b = {90, 90, 90, 90, 90, 60};
-  std::vector<float> joints = joints_b;
+  bool b = true;
 
   BraccioActionClient() : Node("braccio_action_client")
   {
@@ -25,7 +25,7 @@ public:
       "braccio_action");
 
     this->timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(5000),
+      std::chrono::milliseconds(10000),
       std::bind(&BraccioActionClient::send_goal, this));
   }
 
@@ -40,18 +40,30 @@ public:
     }
 
     auto goal_msg = BraccioAction::Goal();
-    if (joints == joints_a)
-      joints = joints_b;
+
+    // Set joints goal
+    /*
+    if (b)
+      goal_msg.goal_joints = joints_a;
     else
-      joints = joints_a;
+      goal_msg.goal_joints = joints_b;
+    */
 
-    goal_msg.goal_joints = joints;
-
+    // Set Pose goal
     geometry_msgs::msg::Point p;
-    p.x = 0.2;
-    p.y = 0.2;
-    p.z = 0.3;
+    if (b){
+      p.x = 0.3;
+      p.y = 0.2;
+      p.z = -0.2;
+    }else{
+      p.x = -0.3;
+      p.y = -0.2;
+      p.z = -0.2;
+    }
     goal_msg.goal_position = p;
+
+    // change goal
+    b = !b;
 
     RCLCPP_INFO(this->get_logger(), "Sending goal");
 

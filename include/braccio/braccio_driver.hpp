@@ -53,7 +53,9 @@ private:
     geometry_msgs::msg::Point current_position;
     std::vector<float> current_joints;
     int serial_port;
-
     std::string serialPortFilename;
+
+    // Arm Link lengths (m)
+    float L1, L2, L3, L4, L5;
 };
 
