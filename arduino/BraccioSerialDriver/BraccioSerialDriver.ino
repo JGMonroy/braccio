@@ -14,6 +14,7 @@ Servo wrist_rot;
 Servo wrist_ver;
 Servo gripper;
 char *ptr = NULL;
+int joints[6];
 
 void setup() {
   //Initialization functions and set up the initial position for Braccio
@@ -33,7 +34,13 @@ void setup() {
   }
 
   //Ready! -> Go Home 
-  Braccio.ServoMovement(20, 90, 90, 90, 90, 90, 10);
+  joints[0] = 90;
+  joints[1] = 90;
+  joints[2] = 90;
+  joints[3] = 90;
+  joints[4] = 90;
+  joints[5] = 10;
+  Braccio.ServoMovement(20, joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
   //Serial.println("Braccio Ready for Operation");
 }
 
@@ -53,9 +60,9 @@ void loop() {
   //1. Read Serial Port
   if (Serial.available() > 0) {
     // get incoming string:
-    while (Serial.available() == 0) {}     //wait for data available
-    String msgIn = Serial.readString();           //read until timeout
-    msgIn.trim();                         // remove any \r \n whitespace at the end of the String
+    //while (Serial.available() == 0) {}   //wait for data available
+    String msgIn = Serial.readString();    //read until timeout
+    msgIn.trim();                          // remove any \r \n whitespace at the end of the String
     //Serial.print("He recibido por serie: ");
     //Serial.println(msgIn); 
       
@@ -63,7 +70,7 @@ void loop() {
     char *strings[10];
     byte index = 0;
     const char *delimiter =" ";
-    ptr = strtok(msgIn.c_str(), delimiter);    
+    ptr = strtok(msgIn.c_str(), delimiter);
     while (ptr != NULL)
     {
       strings[index] = ptr;
@@ -71,32 +78,36 @@ void loop() {
       ptr = strtok(NULL, delimiter);
     }
 
-    //msg could be JOINTS T1 T2 T3 T4 T5 T6
+    // Check CMD
     String cmd = String(strings[0]);
     if (cmd == "JOINTS")    // important, Single quotes for char*, double quotes for String
     {
-      // send joint values to BRaccio:
+      //JOINTS T1 T2 T3 T4 T5 T6
+      // send joint values to Braccio:
       //Serial.println("CMD JOINTS detectado!. Setting new values. ");
-      Braccio.ServoMovement(20, atof(strings[1]), atof(strings[2]), atof(strings[3]), atof(strings[4]), atof(strings[5]), atof(strings[6]));
-      delay(100);
-      Serial.println("JOINTS ok");
+      joints[0] = atoi(strings[1]);
+      joints[1] = atoi(strings[2]);
+      joints[2] = atoi(strings[3]);
+      joints[3] = atoi(strings[4]);
+      joints[4] = atoi(strings[5]);
+      joints[5] = atoi(strings[6]);
+      Braccio.ServoMovement(20, joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
+      Serial.println("ok");
+    }
+    else if (cmd == "STATUS")    // important, Single quotes for char*, double quotes for String
+    {
+      // send current joint values to Serial:      
+      //Serial.println("STATUS detectado!.");
+      char writeBuffer[80];
+      //sprintf(writeBuffer,"JOINTS %.2f %.2f %.2f %.2f %.2f %.2f", joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
+      sprintf(writeBuffer,"%d %d %d %d %d %d", joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
+      Serial.println(writeBuffer);
     }
     else
     {
-      Serial.print("CMD no reconocido: ");
-      Serial.println(strings[0]);
+      Serial.println("error");
+      //Serial.print("CMD no reconocido: ");
+      //Serial.println(strings[0]);
     }
   }
-  
-  /*Braccio.ServoMovement(20, 0, 90, 90, 90, 90, 50);
-  delay(1000); //Wait ms
-
-  //2. 
-  Braccio.ServoMovement(20, 90, 90, 90, 90, 90, 50);
-  delay(1000); //Wait ms
-
-  //3. 
-  Braccio.ServoMovement(20, 180, 90, 90, 90, 90, 50);
-  delay(1000); //Wait ms
-  */
 }
