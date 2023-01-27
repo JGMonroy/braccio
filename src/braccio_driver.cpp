@@ -10,6 +10,7 @@
 #include <errno.h> // Error integer and strerror() function
 #include <termios.h> // Contains POSIX terminal control definitions
 #include <unistd.h> // write(), read(), close()
+//https://blog.mbedded.ninja/programming/operating-systems/linux/linux-serial-ports-using-c-cpp/
 
 using std::placeholders::_1;
 using std::placeholders::_2;
@@ -28,7 +29,7 @@ Braccio::Braccio(): Node("Braccio")
       std::bind(&Braccio::handle_cancel, this, _1),
       std::bind(&Braccio::handle_accepted, this, _1));
 
-    RCLCPP_INFO(this->get_logger(), "[Braccio] Initialization completed. srv_server and action_server ready and operative.");
+    RCLCPP_INFO(this->get_logger(), "[Braccio] srv_server and action_server ready and operative.");
 
     //Arduino SerialPort
     serialPortFilename = "/dev/ttyACM0";
@@ -38,24 +39,8 @@ Braccio::Braccio(): Node("Braccio")
 		printf("[Braccio] ERROR opening serial port: %s \n",serialPortFilename.c_str());
 		return;
 	}else{
-        RCLCPP_INFO(this->get_logger(), "[Braccio] Arduino SeroalPort %s Open", serialPortFilename.c_str());
+        RCLCPP_INFO(this->get_logger(), "[Braccio] Arduino SerialPort %s Open\n", serialPortFilename.c_str());
     }
-
-
-
-    /*
-    serialPortFilename = "/dev/ttyACM0";
-    serPortFile = fopen(serialPortFilename.c_str(), "rw");
-	if (serPortFile == NULL)
-	{
-		printf("[Braccio] ERROR opening serial port: %s \n",serialPortFilename.c_str());
-		return;
-	}else{
-        RCLCPP_INFO(this->get_logger(), "[Braccio] Arduino SeroalPort %s Open", serialPortFilename.c_str());
-    }
-    front_delimiter_ = '{';
-	end_delimiter_ = '}';
-	*/
 }
 
 
@@ -106,6 +91,17 @@ bool Braccio::config_serial(std::string portName)
         return false;
     }
 
+    // flush before start
+    sleep(1); //required to make flush work, for some reason
+    tcflush(serial_port,TCIOFLUSH);
+    //manual flush
+    int num_bytes = 1;
+    while (num_bytes>0){
+        char read_buf[256];
+        memset(&read_buf, '\0', sizeof(read_buf));
+        num_bytes = read(serial_port, &read_buf, sizeof(read_buf));
+    }
+
     // Serial Port config Ok
     return true;
 }
@@ -114,7 +110,7 @@ bool Braccio::config_serial(std::string portName)
 Braccio::~Braccio()
 {
     // nodo cerrandose.
-    printf("Node Braccio leaving gently \n");
+    printf("\nNode Braccio leaving gently \n");
     // close serial port with Arduino
     //fclose(serPortFile);
     close(serial_port);
@@ -129,8 +125,61 @@ void Braccio::process_service_request(
     // Service has been called!
     RCLCPP_INFO(this->get_logger(), "[Braccio] Service has been called!");
 
-    // Fill response
-    //response->turns_right = count_right_;
+    // Clean buffers:
+    tcflush(serial_port,TCIOFLUSH);
+
+    // write serialPort
+    char writeBuffer[80];
+    sprintf(writeBuffer,"STATUS");
+    write(serial_port, writeBuffer, sizeof(writeBuffer));
+    RCLCPP_INFO(this->get_logger(), "[Braccio] Sending request through SerialPort");
+    sleep(3);   //Give at least 3 seconds
+
+    // read Response "T1 T2 T3 T4 T5 T6"
+    char read_buf[256];
+    memset(&read_buf, '\0', sizeof(read_buf));
+    bool read_done = false;
+    int num_bytes;
+    RCLCPP_INFO(this->get_logger(), "[Braccio] Reading response through SerialPort");
+    while (!read_done){
+        num_bytes = read(serial_port, &read_buf, sizeof(read_buf));
+        if (num_bytes > 0)
+            read_done = true;
+        else if (num_bytes < 0)
+            break;
+        else
+            sleep(0.1);
+    }
+
+    // n is the number of bytes read. n may be 0 if no bytes were received, and can also be -1 to signal an error.
+    if (num_bytes < 0) {
+        printf("[Braccio] Error reading from serial port: %s", strerror(errno));
+    }else{
+        RCLCPP_INFO(this->get_logger(), "[Braccio] Status response is %d bytes with content: %s", num_bytes,read_buf);
+        char *strings[10];
+        uint index = 0;
+        const char *delimiter =" ";
+        char* ptr = strtok(read_buf, delimiter);
+        current_joints.clear();
+        while (ptr != NULL)
+        {
+            strings[index] = ptr;
+            current_joints.push_back(atoi(strings[index]));
+            index++;
+            ptr = strtok(NULL, delimiter);
+        }
+
+        if (current_joints.size() == 6){
+            // end-efector position (MCD)
+            current_position = braccio_mcd(current_joints);
+
+            // Fill response
+            response->current_position = current_position;
+            response->current_joints = current_joints;
+        }else{
+            printf("[Braccio] Error reading Status. Not correct format: %s", read_buf);
+        }
+    }
 }
 
 
@@ -172,6 +221,8 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
     auto feedback = std::make_shared<BraccioAction::Feedback>();
     auto result = std::make_shared<BraccioAction::Result>();
 
+    // Clean buffers:
+    tcflush(serial_port,TCIOFLUSH);
 
     //1. check if joints are set. If so, ignore pose.
     if (goal->goal_joints.size() == 6)
@@ -184,14 +235,13 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
 
         char writeBuffer[80];
         sprintf(writeBuffer,"JOINTS %.2f %.2f %.2f %.2f %.2f %.2f", goal->goal_joints[0], goal->goal_joints[1], goal->goal_joints[2], goal->goal_joints[3], goal->goal_joints[4], goal->goal_joints[5]);
-        puts(writeBuffer);
+        //puts(writeBuffer);
 
         // write serialPort
-        //fwrite(writeBuffer, sizeof(char), sizeof(writeBuffer), serPortFile);
         write(serial_port, writeBuffer, sizeof(writeBuffer));
 
     }else{
-        // Setting goal position (MCI)
+        // Calculate joints for position_goal (MCI)
         RCLCPP_INFO(this->get_logger(), "[Braccio] Goal is Position (%.2f, %.2f, %.2f)", goal->goal_position.x, goal->goal_position.y, goal->goal_position.z);
         //auto &angles = braccio_mci(goal->goal_position);
         // Setting joint angles
@@ -199,19 +249,27 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
 
 
     // Wait Arduino Confirmation (movement completed)
-    RCLCPP_INFO(this->get_logger(), "[Braccio] CMD sent. Waiting Braccio confirmation");
-    // Allocate memory for read buffer, set size according to your needs
-    char read_buf [256];
-    memset(&read_buf, '\0', sizeof(read_buf));
+    RCLCPP_INFO(this->get_logger(), "[Braccio] Action CMD sent. Waiting Braccio confirmation");
+    sleep(3);
 
-    // Read bytes. The behaviour of read() (e.g. does it block?,
-    // how long does it block for?) depends on the configuration
-    // settings above, specifically VMIN and VTIME
-    int num_bytes = read(serial_port, &read_buf, sizeof(read_buf));
+    // read Response
+    char read_buf[256];
+    memset(&read_buf, '\0', sizeof(read_buf));
+    bool read_done = false;
+    int num_bytes;
+    while (!read_done){
+        num_bytes = read(serial_port, &read_buf, sizeof(read_buf));
+        if (num_bytes > 0)
+            read_done = true;
+        else if (num_bytes < 0)
+            break;
+        else
+            sleep(1);
+    }
 
     // n is the number of bytes read. n may be 0 if no bytes were received, and can also be -1 to signal an error.
     if (num_bytes < 0) {
-        printf("[Braccio] Error reading from serial port: %s", strerror(errno));
+        printf("[Braccio] Error reading from serial port: %s \n", strerror(errno));
         result->goal_achieved = false;
         goal_handle->succeed(result);
         RCLCPP_INFO(this->get_logger(), "Goal Failed");
@@ -221,85 +279,47 @@ void Braccio::execute(const std::shared_ptr<GoalHandleBraccio> goal_handle)
         goal_handle->succeed(result);
         RCLCPP_INFO(this->get_logger(), "Goal succeeded");
     }
-
-    /*
-    int wait_time_sec = 10;
-    std::string complete_inc_msg;
-    char readBuffer[256];
-    bool msg_began = false;
-    unsigned long start_time = time(nullptr);
-    while ((time(nullptr) - start_time) <= 10) {
-        memset(readBuffer, 0, 256);
-        fread(readBuffer, sizeof(char),256, serPortFile);
-
-        if(sizeof(readBuffer) != 0)
-        {
-            // Basic version
-            std::string msg(readBuffer);
-            complete_inc_msg = msg;
-            break;
-
-            // Delimiters version
-
-            if (readBuffer[0] == front_delimiter_ || msg_began) {
-                msg_began = true;
-
-                if (readBuffer[0] == end_delimiter_){
-                    //msg is complete.
-                    break;
-                }
-                if (readBuffer[0] != front_delimiter_)
-                    complete_inc_msg.append(readBuffer, 1);
-            }
-
-        }
-    }
-
-
-    //check Arduino response
-    if ((time(nullptr) - start_time) <= 10){
-        RCLCPP_INFO(this->get_logger(), "[Braccio] Arduino confirmed that movement is completed: %s", complete_inc_msg.c_str());
-        result->goal_achieved = true;
-        goal_handle->succeed(result);
-        RCLCPP_INFO(this->get_logger(), "Goal succeeded");
-    }else{
-        RCLCPP_INFO(this->get_logger(), "[Braccio] Arduino timeout. Not response received.");
-        result->goal_achieved = false;
-        goal_handle->succeed(result);
-        RCLCPP_INFO(this->get_logger(), "Goal Failed");
-    }
-    */
-
-
-
-    /*
-    for (int i = 1; (i < goal->order) && rclcpp::ok(); ++i) {
-      // Check if there is a cancel request
-      if (goal_handle->is_canceling()) {
-        result->sequence = sequence;
-        goal_handle->canceled(result);
-        RCLCPP_INFO(this->get_logger(), "Goal canceled");
-        return;
-      }
-      // Update sequence
-      sequence.push_back(sequence[i] + sequence[i - 1]);
-      // Publish feedback
-      goal_handle->publish_feedback(feedback);
-      RCLCPP_INFO(this->get_logger(), "Publish feedback");
-
-      loop_rate.sleep();
-    }
-
-
-    // Check if goal is done
-    if (rclcpp::ok()) {
-      result->sequence = sequence;
-      goal_handle->succeed(result);
-      RCLCPP_INFO(this->get_logger(), "Goal succeeded");
-    }
-    */
 }
 
+geometry_msgs::msg::Point Braccio::braccio_mcd(std::vector<float> joints)
+{
+    // Kinematic Direct Model of Braccio Arm
+
+    // Arm Link lengths (m)
+    float L1=0.076;
+    float L2=0.124;
+    float L3=0.124;
+    float L4=0.060;
+    float L5=0.130;
+
+    const double pi = std::acos(-1);
+
+    // joints (rad)
+    float theta1 = joints[0]*pi/180;
+    float theta2 = joints[1]*pi/180;
+    float theta3 = joints[2]*pi/180;
+    float theta4 = joints[3]*pi/180;
+    float theta5 = joints[4]*pi/180;
+    float theta6 = joints[5]*pi/180;
+
+    // just X Y Z components! No orientation needed here!
+    float x = L2*std::cos(theta1)*std::cos(theta2) - (std::cos(theta1 + theta2 + theta3 + theta4)/2 + std::cos(theta2 - theta1 + theta3 + theta4)/2)*(L4 + L5) + L3*std::cos(theta1)*std::cos(theta2)*std::sin(theta3) + L3*std::cos(theta1)*std::cos(theta3)*std::sin(theta2);
+
+    float y = (std::sin(theta2 - theta1 + theta3 + theta4)/2 - std::sin(theta1 + theta2 + theta3 + theta4)/2)*(L4 + L5) + L2*std::cos(theta2)*std::sin(theta1) + L3*std::cos(theta2)*std::sin(theta1)*std::sin(theta3) + L3*std::cos(theta3)*std::sin(theta1)*std::sin(theta2);
+
+    float z = L3*std::cos(theta2 + theta3) - L1 - L2*std::sin(theta2) + L4*std::sin(theta2 + theta3 + theta4) + L5*std::sin(theta2 + theta3 + theta4);
+
+    // Set result
+    geometry_msgs::msg::Point target;
+    target.x = x;
+    target.y = y;
+    target.z = z;
+    return target;
+}
+
+std::vector<float> Braccio::braccio_mci(geometry_msgs::msg::Point p)
+{
+}
 
 int main (int argc, char* argv[]){
     //inicializamos ROS2
